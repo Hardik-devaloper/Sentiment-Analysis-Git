@@ -16,14 +16,16 @@ from collections import Counter
 import numpy as np
 import tensorflow as tf
 
-# ------------------------------------------------------------
-# Reduce unnecessary warning messages in terminal
-# ------------------------------------------------------------
+
+# ============================================================
+# WARNING CONTROL
+# ============================================================
 
 warnings.filterwarnings(
     "ignore",
     category=UserWarning
 )
+
 
 # ============================================================
 # PROJECT PATHS
@@ -48,6 +50,7 @@ LSTM_DIR = os.path.join(
     "lstm"
 )
 
+
 # ============================================================
 # EMOTION LABELS
 #
@@ -67,6 +70,21 @@ EMOTION_NAMES = {
     4: "Fear",
     5: "Surprise",
 }
+
+
+# ============================================================
+# EMOTION EMOJIS
+# ============================================================
+
+EMOTION_EMOJIS = {
+    0: "😢",
+    1: "😄",
+    2: "❤️",
+    3: "😡",
+    4: "😨",
+    5: "😮",
+}
+
 
 # ============================================================
 # KERAS LEGACY TOKENIZER COMPATIBILITY
@@ -121,24 +139,29 @@ except Exception:
 class CompatibleLSTM(OriginalLSTM):
 
     @classmethod
-    def from_config(cls, config):
+    def from_config(
+        cls,
+        config
+    ):
 
         config = dict(config)
 
-        # Old Keras models sometimes contain this
-        # parameter. New Keras does not accept it.
+        # Old Keras / TensorFlow models may contain
+        # parameters which newer Keras does not accept.
+
         config.pop(
             "time_major",
             None
         )
 
-        # Some older models can contain this.
         config.pop(
             "input_length",
             None
         )
 
-        return cls(**config)
+        return cls(
+            **config
+        )
 
 
 # ============================================================
@@ -155,10 +178,8 @@ class CompatibleUnpickler(
         name
     ):
 
-        # Old Keras tokenizer
         if (
-            module
-            == "keras.preprocessing.text"
+            module == "keras.preprocessing.text"
             and name == "Tokenizer"
         ):
 
@@ -179,9 +200,13 @@ class CompatibleUnpickler(
         )
 
 
-def load_pickle(path):
+def load_pickle(
+    path
+):
 
-    if not os.path.exists(path):
+    if not os.path.exists(
+        path
+    ):
 
         raise FileNotFoundError(
             f"Model file not found:\n{path}"
@@ -319,7 +344,6 @@ lstm_model_path = os.path.join(
 )
 
 
-# Custom objects required by the old H5 model
 custom_objects = {
 
     "LSTM":
@@ -339,6 +363,7 @@ custom_objects = {
 
     "Dropout":
         tf.keras.layers.Dropout,
+
 }
 
 
@@ -371,10 +396,25 @@ except Exception as first_error:
             lstm_model_path,
 
             custom_objects={
+
                 "LSTM":
                     CompatibleLSTM,
+
                 "CompatibleLSTM":
-                    CompatibleLSTM
+                    CompatibleLSTM,
+
+                "Bidirectional":
+                    tf.keras.layers.Bidirectional,
+
+                "Embedding":
+                    tf.keras.layers.Embedding,
+
+                "Dense":
+                    tf.keras.layers.Dense,
+
+                "Dropout":
+                    tf.keras.layers.Dropout,
+
             },
 
             compile=False
@@ -399,12 +439,15 @@ print(
 # TEXT CLEANING
 # ============================================================
 
-def clean_text(text):
+def clean_text(
+    text
+):
 
     if not isinstance(
         text,
         str
     ):
+
         return ""
 
     text = text.lower()
@@ -423,7 +466,7 @@ def clean_text(text):
         text
     )
 
-    # Remove hashtags but keep the word
+    # Keep hashtag word
     text = re.sub(
         r"#(\w+)",
         r"\1",
@@ -457,6 +500,29 @@ def clean_text(text):
 
 
 # ============================================================
+# HELPER: MATCH PATTERN
+# ============================================================
+
+def contains_pattern(
+    text,
+    pattern
+):
+
+    try:
+
+        return bool(
+            re.search(
+                pattern,
+                text
+            )
+        )
+
+    except Exception:
+
+        return False
+
+
+# ============================================================
 # MAJORITY VOTE
 # ============================================================
 
@@ -469,35 +535,110 @@ def majority_vote(
         for p in predictions
     ]
 
+    if not predictions:
+        return 0
+
     counts = Counter(
         predictions
     )
 
-    return counts.most_common(1)[0][0]
+    highest_count = max(
+        counts.values()
+    )
+
+    winners = [
+        emotion
+        for emotion, count
+        in counts.items()
+        if count == highest_count
+    ]
+
+    # True majority
+    if len(winners) == 1:
+
+        return int(
+            winners[0]
+        )
+
+    # Tie:
+    # Return first model vote for backward compatibility.
+    # The context/tie-resolution layer will handle it later.
+
+    return int(
+        predictions[0]
+    )
+
+
+# ============================================================
+# GET VOTE COUNTS
+# ============================================================
+
+def get_vote_counts(
+    predictions
+):
+
+    predictions = [
+        int(p)
+        for p in predictions
+    ]
+
+    counts = Counter(
+        predictions
+    )
+
+    return {
+        emotion: int(
+            counts.get(
+                emotion,
+                0
+            )
+        )
+        for emotion in range(6)
+    }
 
 
 # ============================================================
 # SAFE LABEL CONVERSION
 # ============================================================
 
-def label_from_class(
-    class_id
-):
+def label_from_class(class_id):
 
-    class_id = int(class_id)
+    try:
+        class_id = int(class_id)
+    except Exception:
+        return "Unknown"
 
-    # First use the saved LabelEncoder.
+    # Use the project's known emotion mapping.
+    # This avoids depending on how the old LabelEncoder
+    # serialized its class labels.
+    return EMOTION_NAMES.get(
+        class_id,
+        "Unknown"
+    )
+
+    try:
+
+        class_id = int(
+            class_id
+        )
+
+    except Exception:
+
+        return "Unknown"
+
+    # Prefer saved LabelEncoder
     try:
 
         label = le.inverse_transform(
             [class_id]
         )[0]
 
-        return str(label)
+        return str(
+            label
+        )
 
     except Exception:
 
-        # Fallback mapping
         return EMOTION_NAMES.get(
             class_id,
             "Unknown"
@@ -505,24 +646,621 @@ def label_from_class(
 
 
 # ============================================================
-# CONTEXT-AWARE EMOTION CORRECTION
+# LABEL TO CLASS
 # ============================================================
-#
-# This does NOT replace the ML models.
-#
-# It only corrects very strong contextual expressions that
-# TF-IDF classifiers can easily misunderstand.
-#
-# Priority:
-#
-# 1. Strong sadness / grief
-# 2. Strong fear
-# 3. Strong anger
-# 4. Strong love
-# 5. Strong joy
-# 6. Strong surprise
-#
-# Otherwise the original ensemble prediction is retained.
+
+def class_from_label(
+    label
+):
+
+    if label is None:
+        return None
+
+    label = str(
+        label
+    ).strip().lower()
+
+    for class_id, emotion in EMOTION_NAMES.items():
+
+        if label == emotion.lower():
+
+            return class_id
+
+    # Handle common alternative labels
+
+    aliases = {
+
+        "sad": 0,
+        "sadness": 0,
+
+        "happy": 1,
+        "happiness": 1,
+        "joy": 1,
+
+        "love": 2,
+
+        "angry": 3,
+        "anger": 3,
+
+        "fear": 4,
+        "afraid": 4,
+
+        "surprise": 5,
+        "surprised": 5,
+
+    }
+
+    return aliases.get(
+        label
+    )
+
+
+# ============================================================
+# CONTEXT SIGNAL DETECTION
+# ============================================================
+
+def get_context_scores(
+    original_text
+):
+
+    text = clean_text(
+        original_text
+    )
+
+    scores = {
+
+        "sadness": 0,
+        "joy": 0,
+        "love": 0,
+        "anger": 0,
+        "fear": 0,
+        "surprise": 0,
+
+    }
+
+    if not text:
+
+        return scores
+
+
+    # ========================================================
+    # NEGATION / CONTRAST
+    # ========================================================
+
+    negative_love_patterns = [
+
+        r"\bi do not love\b",
+
+        r"\bi don't love\b",
+
+        r"\bi did not love\b",
+
+        r"\bi didn't love\b",
+
+        r"\bnot in love\b",
+
+        r"\bno longer love\b",
+
+        r"\bstopped loving\b",
+
+    ]
+
+    negative_joy_patterns = [
+
+        r"\bnot happy\b",
+
+        r"\bnot very happy\b",
+
+        r"\bnot excited\b",
+
+        r"\bno longer happy\b",
+
+        r"\bnever happy\b",
+
+    ]
+
+    negative_positive_context = {
+
+        "love": any(
+            contains_pattern(
+                text,
+                pattern
+            )
+            for pattern in negative_love_patterns
+        ),
+
+        "joy": any(
+            contains_pattern(
+                text,
+                pattern
+            )
+            for pattern in negative_joy_patterns
+        ),
+
+    }
+
+
+    # ========================================================
+    # SADNESS / GRIEF
+    # ========================================================
+
+    sadness_patterns = [
+
+        # Strong grief
+        (r"\bleft forever\b", 6),
+
+        (r"\bleft me forever\b", 6),
+
+        (r"\bsaid goodbye\b.*\bforever\b", 6),
+
+        (r"\bgoodbye forever\b", 6),
+
+        (r"\bnever see .* again\b", 6),
+
+        (r"\bwill never see .* again\b", 6),
+
+        (r"\bpassed away\b", 7),
+
+        (r"\bhas passed away\b", 7),
+
+        (r"\bdied\b", 7),
+
+        (r"\bdeath of\b", 7),
+
+        (r"\blost someone\b", 6),
+
+        (r"\bloss of\b", 6),
+
+        (r"\bfuneral\b", 6),
+
+        # Strong sadness
+        (r"\bheartbroken\b", 6),
+
+        (r"\bheart broken\b", 6),
+
+        (r"\bdevastated\b", 6),
+
+        (r"\bgrieving\b", 6),
+
+        (r"\bgrief\b", 6),
+
+        (r"\bdeeply sad\b", 5),
+
+        (r"\bextremely sad\b", 5),
+
+        (r"\bvery sad\b", 4),
+
+        (r"\bso sad\b", 4),
+
+        (r"\bfeel sad\b", 3),
+
+        (r"\bfeeling sad\b", 3),
+
+        (r"\bfeel lonely\b", 4),
+
+        (r"\bfeeling lonely\b", 4),
+
+        (r"\bfeel alone\b", 3),
+
+        (r"\bfeeling alone\b", 3),
+
+        (r"\bmiss .* so much\b", 4),
+
+        (r"\bmissing .* so much\b", 4),
+
+        (r"\bmiss him\b", 3),
+
+        (r"\bmiss her\b", 3),
+
+        (r"\bmiss them\b", 3),
+
+        (r"\bcrying\b", 4),
+
+        (r"\bcried\b", 4),
+
+        (r"\btears\b", 3),
+
+        (r"\bsorrow\b", 5),
+
+        (r"\bsuffering\b", 3),
+
+        (r"\bfeel empty\b", 4),
+
+        (r"\bfeeling empty\b", 4),
+
+        (r"\bbroken heart\b", 5),
+
+        # Family goodbye situations
+        (r"\bmy uncle .* goodbye\b", 5),
+
+        (r"\bmy aunt .* goodbye\b", 5),
+
+        (r"\bmy friend .* goodbye\b", 5),
+
+        (r"\bmy father .* goodbye\b", 5),
+
+        (r"\bmy mother .* goodbye\b", 5),
+
+        (r"\bmy brother .* goodbye\b", 5),
+
+        (r"\bmy sister .* goodbye\b", 5),
+
+        (r"\bmy family .* goodbye\b", 5),
+
+        # Negative farewell
+        (r"\bpainful goodbye\b", 6),
+
+        (r"\bpainful loss\b", 6),
+
+    ]
+
+    for pattern, weight in sadness_patterns:
+
+        if contains_pattern(
+            text,
+            pattern
+        ):
+
+            scores["sadness"] += weight
+
+
+    # ========================================================
+    # FEAR
+    # ========================================================
+
+    fear_patterns = [
+
+        (r"\bterrified\b", 6),
+
+        (r"\bterrifying\b", 5),
+
+        (r"\bscared\b", 4),
+
+        (r"\bfrightened\b", 5),
+
+        (r"\bafraid\b", 4),
+
+        (r"\bfear\b", 4),
+
+        (r"\bpanic\b", 5),
+
+        (r"\bpanicking\b", 5),
+
+        (r"\bnervous\b", 3),
+
+        (r"\banxious\b", 4),
+
+        (r"\bworried\b", 3),
+
+        (r"\bthreatened\b", 5),
+
+        (r"\bin danger\b", 6),
+
+        (r"\bunsafe\b", 4),
+
+        (r"\bnightmare\b", 4),
+
+        (r"\bscared that\b", 5),
+
+        (r"\bafraid that\b", 5),
+
+        (r"\bterrified that\b", 6),
+
+        (r"\bworried that\b", 4),
+
+        (r"\bsomething bad will happen\b", 5),
+
+    ]
+
+    for pattern, weight in fear_patterns:
+
+        if contains_pattern(
+            text,
+            pattern
+        ):
+
+            scores["fear"] += weight
+
+
+    # ========================================================
+    # ANGER
+    # ========================================================
+
+    anger_patterns = [
+
+        (r"\bfurious\b", 6),
+
+        (r"\brage\b", 6),
+
+        (r"\braging\b", 5),
+
+        (r"\bangry\b", 5),
+
+        (r"\bmad at\b", 4),
+
+        (r"\bmad with\b", 4),
+
+        (r"\bfrustrated\b", 4),
+
+        (r"\bfrustrating\b", 4),
+
+        (r"\bhate\b", 5),
+
+        (r"\bhated\b", 5),
+
+        (r"\bdisgusted\b", 5),
+
+        (r"\bdisappointing\b", 3),
+
+        (r"\bdisappointed\b", 3),
+
+        (r"\bannoyed\b", 4),
+
+        (r"\bannoying\b", 4),
+
+        (r"\birritated\b", 4),
+
+        (r"\birritating\b", 4),
+
+        (r"\bworst\b", 3),
+
+        (r"\bunacceptable\b", 5),
+
+        (r"\bcan'?t stand\b", 5),
+
+        (r"\bdo not like\b", 2),
+
+        (r"\bdon'?t like\b", 2),
+
+    ]
+
+    for pattern, weight in anger_patterns:
+
+        if contains_pattern(
+            text,
+            pattern
+        ):
+
+            scores["anger"] += weight
+
+
+    # ========================================================
+    # LOVE
+    # ========================================================
+
+    love_patterns = [
+
+        # Direct romantic love
+        (r"\bi love you\b", 7),
+
+        (r"\blove you so much\b", 7),
+
+        (r"\blove you forever\b", 7),
+
+        (r"\bdeeply in love\b", 7),
+
+        (r"\bfalling in love\b", 6),
+
+        (r"\bin love\b", 6),
+
+        (r"\bmy beloved\b", 6),
+
+        (r"\bmy soulmate\b", 7),
+
+        (r"\bromantic\b", 5),
+
+        (r"\baffection\b", 4),
+
+        (r"\badorable\b", 4),
+
+        # Family love
+        (r"\bi love my parents\b", 7),
+
+        (r"\bi love my mother\b", 7),
+
+        (r"\bi love my father\b", 7),
+
+        (r"\bi love my mom\b", 7),
+
+        (r"\bi love my dad\b", 7),
+
+        (r"\bi love my family\b", 7),
+
+        (r"\bi love my brother\b", 6),
+
+        (r"\bi love my sister\b", 6),
+
+        (r"\bi love my friends\b", 5),
+
+        (r"\bi love my friend\b", 5),
+
+        (r"\blove my parents\b", 7),
+
+        (r"\blove my mother\b", 7),
+
+        (r"\blove my father\b", 7),
+
+        (r"\blove my family\b", 7),
+
+        (r"\blove my brother\b", 6),
+
+        (r"\blove my sister\b", 6),
+
+        # General love
+        (r"\bi really love\b", 6),
+
+        (r"\bi truly love\b", 6),
+
+        (r"\bi absolutely love\b", 6),
+
+        (r"\bi deeply love\b", 6),
+
+        (r"\bi love this\b", 5),
+
+        (r"\bi love that\b", 5),
+
+        (r"\bi love spending time\b", 5),
+
+        (r"\blove spending time\b", 5),
+
+        (r"\bwith all my heart\b", 5),
+
+        (r"\bmore than anything in the world\b", 4),
+
+    ]
+
+    for pattern, weight in love_patterns:
+
+        if contains_pattern(
+            text,
+            pattern
+        ):
+
+            scores["love"] += weight
+
+
+    # ========================================================
+    # JOY / HAPPINESS
+    # ========================================================
+
+    joy_patterns = [
+
+        (r"\bextremely happy\b", 6),
+
+        (r"\bvery happy\b", 5),
+
+        (r"\bso happy\b", 5),
+
+        (r"\bhappy today\b", 4),
+
+        (r"\bhappiest\b", 6),
+
+        (r"\bhappy\b", 3),
+
+        (r"\bexcited\b", 5),
+
+        (r"\bexciting\b", 4),
+
+        (r"\bcelebrat\w*\b", 5),
+
+        (r"\bcongratulations\b", 5),
+
+        (r"\bcongratulate\b", 5),
+
+        (r"\bwon\b", 5),
+
+        (r"\bwinner\b", 5),
+
+        (r"\bsuccess\b", 5),
+
+        (r"\bsuccessful\b", 5),
+
+        (r"\bthrilled\b", 6),
+
+        (r"\bdelighted\b", 6),
+
+        (r"\bjoyful\b", 6),
+
+        (r"\bawesome\b", 4),
+
+        (r"\bamazing\b", 4),
+
+        (r"\bwonderful\b", 5),
+
+        (r"\bbest day\b", 5),
+
+        (r"\bdream job\b", 5),
+
+        (r"\bgot my dream job\b", 7),
+
+        (r"\bproud\b", 4),
+
+        (r"\bgrateful\b", 4),
+
+        (r"\bthankful\b", 4),
+
+        (r"\bglad\b", 4),
+
+    ]
+
+    for pattern, weight in joy_patterns:
+
+        if contains_pattern(
+            text,
+            pattern
+        ):
+
+            scores["joy"] += weight
+
+
+    # ========================================================
+    # SURPRISE
+    # ========================================================
+
+    surprise_patterns = [
+
+        (r"\bwow\b", 4),
+
+        (r"\bno way\b", 5),
+
+        (r"\bcannot believe\b", 5),
+
+        (r"\bcan'?t believe\b", 5),
+
+        (r"\bcould not believe\b", 5),
+
+        (r"\bcouldn'?t believe\b", 5),
+
+        (r"\bnever expected\b", 5),
+
+        (r"\bunexpected\b", 5),
+
+        (r"\bsurprised\b", 6),
+
+        (r"\bsurprise\b", 5),
+
+        (r"\bshocked\b", 6),
+
+        (r"\bshocking\b", 5),
+
+        (r"\bunbelievable\b", 5),
+
+        (r"\bwhat a surprise\b", 7),
+
+        (r"\bnever saw that coming\b", 7),
+
+        (r"\bwhat just happened\b", 5),
+
+    ]
+
+    for pattern, weight in surprise_patterns:
+
+        if contains_pattern(
+            text,
+            pattern
+        ):
+
+            scores["surprise"] += weight
+
+
+    # ========================================================
+    # REMOVE NEGATED LOVE / JOY SIGNALS
+    # ========================================================
+
+    if negative_positive_context["love"]:
+
+        scores["love"] = 0
+
+    if negative_positive_context["joy"]:
+
+        scores["joy"] = 0
+
+
+    return scores
+
+
+# ============================================================
+# CONTEXT-AWARE EMOTION CORRECTION
 # ============================================================
 
 def context_correction(
@@ -538,382 +1276,53 @@ def context_correction(
 
         return model_prediction
 
-    # --------------------------------------------------------
-    # SADNESS / GRIEF
-    # --------------------------------------------------------
 
-    sadness_strong = [
-
-        r"\bleft forever\b",
-
-        r"\bleft me forever\b",
-
-        r"\bsaid goodbye\b.*\bforever\b",
-
-        r"\bgoodbye forever\b",
-
-        r"\bnever see .* again\b",
-
-        r"\bwill never see .* again\b",
-
-        r"\bmiss .* so much\b",
-
-        r"\bmissing .* so much\b",
-
-        r"\bheartbroken\b",
-
-        r"\bheart broken\b",
-
-        r"\bdevastated\b",
-
-        r"\bgrieving\b",
-
-        r"\bgrief\b",
-
-        r"\bdeeply sad\b",
-
-        r"\bextremely sad\b",
-
-        r"\bvery sad\b",
-
-        r"\bso sad\b",
-
-        r"\bfeel sad\b",
-
-        r"\bfeeling sad\b",
-
-        r"\bfeel lonely\b",
-
-        r"\bfeeling lonely\b",
-
-        r"\blost someone\b",
-
-        r"\bloss of\b",
-
-        r"\bdied\b",
-
-        r"\bpassed away\b",
-
-        r"\bfuneral\b",
-
-        r"\btears\b",
-
-        r"\bcrying\b",
-
-        r"\bcried\b",
-
-        r"\bcry\b",
-
-        r"\bsorrow\b",
-
-        r"\bsuffering\b",
-
-        r"\bpainful goodbye\b",
-
-        r"\bpainful loss\b",
-
-        r"\bfeel empty\b",
-
-        r"\bfeeling empty\b",
-
-        r"\bbroken heart\b",
-
-        r"\bmy uncle .* goodbye\b",
-
-        r"\bmy aunt .* goodbye\b",
-
-        r"\bmy friend .* goodbye\b",
-
-        r"\bmy father .* goodbye\b",
-
-        r"\bmy mother .* goodbye\b",
-
-        r"\bmy brother .* goodbye\b",
-
-        r"\bmy sister .* goodbye\b",
-
-    ]
-
-    sadness_score = 0
-
-    for pattern in sadness_strong:
-
-        if re.search(
-            pattern,
-            text
-        ):
-
-            sadness_score += 1
-
-
-    # --------------------------------------------------------
-    # FEAR
-    # --------------------------------------------------------
-
-    fear_words = [
-
-        r"\bterrified\b",
-
-        r"\bterrifying\b",
-
-        r"\bscared\b",
-
-        r"\bfrightened\b",
-
-        r"\bafraid\b",
-
-        r"\bfear\b",
-
-        r"\bpanic\b",
-
-        r"\bpanicking\b",
-
-        r"\bnervous\b",
-
-        r"\banxious\b",
-
-        r"\bworried\b",
-
-        r"\bthreatened\b",
-
-        r"\bin danger\b",
-
-        r"\bunsafe\b",
-
-        r"\bnightmare\b",
-
-    ]
-
-    fear_score = 0
-
-    for pattern in fear_words:
-
-        if re.search(
-            pattern,
-            text
-        ):
-
-            fear_score += 1
-
-
-    # --------------------------------------------------------
-    # ANGER
-    # --------------------------------------------------------
-
-    anger_words = [
-
-        r"\bfurious\b",
-
-        r"\brage\b",
-
-        r"\braging\b",
-
-        r"\bangry\b",
-
-        r"\bmad\b",
-
-        r"\bfrustrated\b",
-
-        r"\bfrustrating\b",
-
-        r"\bhate\b",
-
-        r"\bhated\b",
-
-        r"\bdisgusted\b",
-
-        r"\bdisappointing\b",
-
-        r"\bdisappointed\b",
-
-        r"\bannoyed\b",
-
-        r"\bannoying\b",
-
-        r"\birritated\b",
-
-        r"\birritating\b",
-
-        r"\bworst\b",
-
-        r"\bunacceptable\b",
-
-    ]
-
-    anger_score = 0
-
-    for pattern in anger_words:
-
-        if re.search(
-            pattern,
-            text
-        ):
-
-            anger_score += 1
-
-
-    # --------------------------------------------------------
-    # LOVE
-    # --------------------------------------------------------
-
-    love_words = [
-
-        r"\bi love you\b",
-
-        r"\blove you so much\b",
-
-        r"\blove you forever\b",
-
-        r"\bdeeply in love\b",
-
-        r"\bfalling in love\b",
-
-        r"\bin love\b",
-
-        r"\bmy beloved\b",
-
-        r"\bmy soulmate\b",
-
-        r"\bromantic\b",
-
-        r"\baffection\b",
-
-        r"\badorable\b",
-
-    ]
-
-    love_score = 0
-
-    for pattern in love_words:
-
-        if re.search(
-            pattern,
-            text
-        ):
-
-            love_score += 1
-
-
-    # --------------------------------------------------------
-    # JOY
-    # --------------------------------------------------------
-
-    joy_words = [
-
-        r"\bextremely happy\b",
-
-        r"\bvery happy\b",
-
-        r"\bso happy\b",
-
-        r"\bhappy today\b",
-
-        r"\bhappiest\b",
-
-        r"\bexcited\b",
-
-        r"\bexciting\b",
-
-        r"\bcelebrat(e|ing|ed|ion)\b",
-
-        r"\bcongratulations\b",
-
-        r"\bcongratulate\b",
-
-        r"\bwon\b",
-
-        r"\bwinner\b",
-
-        r"\bsuccess\b",
-
-        r"\bsuccessful\b",
-
-        r"\bthrilled\b",
-
-        r"\bdelighted\b",
-
-        r"\bjoyful\b",
-
-        r"\bawesome\b",
-
-        r"\bamazing\b",
-
-        r"\bwonderful\b",
-
-        r"\bbest day\b",
-
-    ]
-
-    joy_score = 0
-
-    for pattern in joy_words:
-
-        if re.search(
-            pattern,
-            text
-        ):
-
-            joy_score += 1
-
-
-    # --------------------------------------------------------
-    # SURPRISE
-    # --------------------------------------------------------
-
-    surprise_words = [
-
-        r"\bwow\b",
-
-        r"\bno way\b",
-
-        r"\bcannot believe\b",
-
-        r"\bcan't believe\b",
-
-        r"\bcould not believe\b",
-
-        r"\bcouldn't believe\b",
-
-        r"\bnever expected\b",
-
-        r"\bunexpected\b",
-
-        r"\bsurprised\b",
-
-        r"\bsurprise\b",
-
-        r"\bshocked\b",
-
-        r"\bshocking\b",
-
-        r"\bunbelievable\b",
-
-        r"\bwhat a surprise\b",
-
-        r"\bnever saw that coming\b",
-
-    ]
-
-    surprise_score = 0
-
-    for pattern in surprise_words:
-
-        if re.search(
-            pattern,
-            text
-        ):
-
-            surprise_score += 1
+    scores = get_context_scores(
+        original_text
+    )
 
 
     # ========================================================
-    # IMPORTANT CONTEXT RULES
+    # GET BEST CONTEXT EMOTION
     # ========================================================
 
-    # A goodbye by itself does NOT automatically mean sadness.
-    #
-    # But goodbye + forever / loss / crying / heartbroken etc.
-    # is a strong sadness signal.
+    score_to_class = {
+
+        "sadness": 0,
+        "joy": 1,
+        "love": 2,
+        "anger": 3,
+        "fear": 4,
+        "surprise": 5,
+
+    }
+
+    sorted_emotions = sorted(
+        scores.items(),
+        key=lambda item: item[1],
+        reverse=True
+    )
+
+    best_emotion = (
+        sorted_emotions[0][0]
+    )
+
+    best_score = (
+        sorted_emotions[0][1]
+    )
+
+    second_score = (
+        sorted_emotions[1][1]
+    )
+
+
+    # ========================================================
+    # IMPORTANT SPECIAL CASES
+    # ========================================================
+
+    # --------------------------------------------------------
+    # GOODBYE
+    # --------------------------------------------------------
 
     goodbye_present = bool(
         re.search(
@@ -922,95 +1331,256 @@ def context_correction(
         )
     )
 
-    positive_context = bool(
+    positive_goodbye_context = bool(
         re.search(
-            r"\bcelebrat\w*\b"
+            r"\bsee you tomorrow\b"
+            r"|\bsee you soon\b"
+            r"|\bsee you later\b"
             r"|\bgraduat\w*\b"
-            r"|\bparty\b"
             r"|\bwedding\b"
-            r"|\bhappy\b",
+            r"|\bparty\b"
+            r"|\bcelebrat\w*\b",
             text
         )
     )
 
-    # Example:
-    #
-    # "My uncle said goodbye to me and left forever."
-    #
-    # sadness_score > 0
-    # goodbye_present = True
-    # therefore sadness wins.
+    # Normal goodbye should NOT automatically become sadness.
 
-    if sadness_score >= 1:
-
-        return 0
-
-
-    # Strong fear should override a weak generic prediction.
-
-    if fear_score >= 2:
-
-        return 4
-
-
-    # Strong anger should override weak generic prediction.
-
-    if anger_score >= 2:
-
-        return 3
-
-
-    # Strong love.
-
-    if love_score >= 1:
-
-        # If there is very strong sadness as well,
-        # sadness was already handled above.
-        return 2
-
-
-    # Strong joy.
-
-    if joy_score >= 2:
-
-        return 1
-
-
-    # Surprise should be considered when the sentence
-    # contains clear surprise language and does not contain
-    # stronger negative emotion.
-
-    if surprise_score >= 2:
-
-        if (
-            anger_score == 0
-            and sadness_score == 0
-            and fear_score == 0
-        ):
-
-            return 5
-
-
-    # --------------------------------------------------------
-    # GOODBYE WITHOUT NEGATIVE CONTEXT
-    # --------------------------------------------------------
-    #
-    # Do NOT automatically classify:
-    #
-    # "Goodbye everyone, see you tomorrow"
-    #
-    # as sadness.
-    #
-    # Let the ML ensemble decide.
-
-    if goodbye_present:
+    if (
+        goodbye_present
+        and positive_goodbye_context
+        and scores["sadness"] < 5
+    ):
 
         return model_prediction
 
 
-    # Otherwise preserve the actual ensemble result.
+    # --------------------------------------------------------
+    # STRONG GRIEF
+    # --------------------------------------------------------
 
-    return model_prediction
+    if scores["sadness"] >= 5:
+
+        return 0
+
+
+    # --------------------------------------------------------
+    # STRONG FEAR
+    # --------------------------------------------------------
+
+    if scores["fear"] >= 6:
+
+        return 4
+
+
+    # --------------------------------------------------------
+    # STRONG ANGER
+    # --------------------------------------------------------
+
+    if scores["anger"] >= 6:
+
+        return 3
+
+
+    # --------------------------------------------------------
+    # STRONG LOVE
+    # --------------------------------------------------------
+
+    if scores["love"] >= 5:
+
+        return 2
+
+
+    # --------------------------------------------------------
+    # STRONG JOY
+    # --------------------------------------------------------
+
+    if scores["joy"] >= 6:
+
+        return 1
+
+
+    # --------------------------------------------------------
+    # STRONG SURPRISE
+    # --------------------------------------------------------
+
+    if scores["surprise"] >= 6:
+
+        return 5
+
+
+    # ========================================================
+    # HANDLE COMPETING CONTEXT
+    # ========================================================
+
+    if best_score > 0:
+
+        # A clearly dominant context signal.
+        if (
+            best_score >= 5
+            and best_score >= second_score + 2
+        ):
+
+            return score_to_class[
+                best_emotion
+            ]
+
+
+    # ========================================================
+    # MODEL PREDICTION
+    # ========================================================
+
+    return int(
+        model_prediction
+    )
+
+
+# ============================================================
+# SMART TIE RESOLUTION
+# ============================================================
+
+def resolve_ensemble(
+    text,
+    predictions
+):
+
+    model_votes = [
+
+        int(
+            predictions[
+                "decision_tree"
+            ]
+        ),
+
+        int(
+            predictions[
+                "naive_bayes"
+            ]
+        ),
+
+        int(
+            predictions[
+                "xgboost"
+            ]
+        ),
+
+        int(
+            predictions[
+                "lstm"
+            ]
+        ),
+
+    ]
+
+    counts = get_vote_counts(
+        model_votes
+    )
+
+    highest_count = max(
+        counts.values()
+    )
+
+    winners = [
+
+        emotion
+
+        for emotion, count
+        in counts.items()
+
+        if count == highest_count
+
+    ]
+
+
+    # ========================================================
+    # TRUE MAJORITY
+    # ========================================================
+
+    if len(winners) == 1:
+
+        ensemble_prediction = int(
+            winners[0]
+        )
+
+    else:
+
+        # ====================================================
+        # 2-2 OR OTHER TIE
+        # ====================================================
+
+        context_scores = get_context_scores(
+            text
+        )
+
+        context_candidates = sorted(
+
+            context_scores.items(),
+
+            key=lambda item: item[1],
+
+            reverse=True
+
+        )
+
+
+        selected = None
+
+        for emotion_name, score in context_candidates:
+
+            emotion_class = {
+
+                "sadness": 0,
+                "joy": 1,
+                "love": 2,
+                "anger": 3,
+                "fear": 4,
+                "surprise": 5,
+
+            }[emotion_name]
+
+            if (
+                emotion_class in winners
+                and score > 0
+            ):
+
+                selected = emotion_class
+                break
+
+
+        if selected is not None:
+
+            ensemble_prediction = int(
+                selected
+            )
+
+        else:
+
+            # No strong contextual information.
+            # Use model order as deterministic fallback.
+
+            ensemble_prediction = int(
+                model_votes[0]
+            )
+
+
+    # ========================================================
+    # CONTEXT CORRECTION AFTER ENSEMBLE
+    # ========================================================
+
+    final_prediction = context_correction(
+
+        text,
+
+        ensemble_prediction
+
+    )
+
+
+    return (
+        ensemble_prediction,
+        final_prediction,
+        counts
+    )
 
 
 # ============================================================
@@ -1030,76 +1600,96 @@ def get_model_predictions(
         return None
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # TF-IDF
-    # --------------------------------------------------------
+    # ========================================================
 
     tfidf_vector = tfidf.transform(
         [cleaned]
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # DECISION TREE
-    # --------------------------------------------------------
+    # ========================================================
 
     prediction_dt = int(
+
         dt.predict(
             tfidf_vector
         )[0]
+
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # NAIVE BAYES
-    # --------------------------------------------------------
+    # ========================================================
 
     prediction_nb = int(
+
         nb.predict(
             tfidf_vector
         )[0]
+
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # XGBOOST
-    # --------------------------------------------------------
+    # ========================================================
 
     prediction_xgb = int(
+
         xgb.predict(
             tfidf_vector
         )[0]
+
     )
 
 
-    # --------------------------------------------------------
+    # ========================================================
     # LSTM
-    # --------------------------------------------------------
+    # ========================================================
 
     sequences = tokenizer.texts_to_sequences(
         [cleaned]
     )
 
     padded_sequences = (
+
         tf.keras.preprocessing
         .sequence
         .pad_sequences(
+
             sequences,
+
             maxlen=120,
+
             padding="pre",
+
             truncating="pre"
+
         )
+
     )
+
 
     lstm_output = lstm_model.predict(
+
         padded_sequences,
+
         verbose=0
+
     )
 
+
     prediction_lstm = int(
+
         np.argmax(
             lstm_output[0]
         )
+
     )
 
 
@@ -1116,6 +1706,7 @@ def get_model_predictions(
 
         "lstm":
             prediction_lstm,
+
     }
 
 
@@ -1149,51 +1740,13 @@ def predict_sentiment(
         return "Unknown"
 
 
-    # --------------------------------------------------------
-    # ORIGINAL ENSEMBLE
-    # --------------------------------------------------------
-
-    model_votes = [
-
-        predictions[
-            "decision_tree"
-        ],
-
-        predictions[
-            "naive_bayes"
-        ],
-
-        predictions[
-            "xgboost"
-        ],
-
-        predictions[
-            "lstm"
-        ],
-
-    ]
-
-    ensemble_prediction = majority_vote(
-        model_votes
+    ensemble_prediction, final_prediction, _ = (
+        resolve_ensemble(
+            text,
+            predictions
+        )
     )
 
-
-    # --------------------------------------------------------
-    # CONTEXT CORRECTION
-    # --------------------------------------------------------
-
-    final_prediction = context_correction(
-
-        text,
-
-        ensemble_prediction
-
-    )
-
-
-    # --------------------------------------------------------
-    # RETURN LABEL
-    # --------------------------------------------------------
 
     return label_from_class(
         final_prediction
@@ -1207,6 +1760,10 @@ def predict_sentiment(
 def predict_with_details(
     text
 ):
+
+    # ========================================================
+    # EMPTY INPUT
+    # ========================================================
 
     if not isinstance(
         text,
@@ -1235,6 +1792,15 @@ def predict_with_details(
             "final_class":
                 None,
 
+            "raw_ensemble_class":
+                None,
+
+            "context_correction":
+                False,
+
+            "vote_counts":
+                {},
+
         }
 
 
@@ -1262,13 +1828,25 @@ def predict_with_details(
             "final_class":
                 None,
 
+            "raw_ensemble_class":
+                None,
+
+            "context_correction":
+                False,
+
+            "vote_counts":
+                {},
+
         }
 
+
+    # ========================================================
+    # GET MODEL PREDICTIONS
+    # ========================================================
 
     predictions = get_model_predictions(
         text
     )
-
 
     if predictions is None:
 
@@ -1294,76 +1872,89 @@ def predict_with_details(
             "final_class":
                 None,
 
+            "raw_ensemble_class":
+                None,
+
+            "context_correction":
+                False,
+
+            "vote_counts":
+                {},
+
         }
 
 
-    # --------------------------------------------------------
-    # MODEL VOTES
-    # --------------------------------------------------------
+    # ========================================================
+    # INDIVIDUAL MODEL RESULTS
+    # ========================================================
 
-    prediction_dt = predictions[
-        "decision_tree"
-    ]
+    prediction_dt = int(
+        predictions[
+            "decision_tree"
+        ]
+    )
 
-    prediction_nb = predictions[
-        "naive_bayes"
-    ]
+    prediction_nb = int(
+        predictions[
+            "naive_bayes"
+        ]
+    )
 
-    prediction_xgb = predictions[
-        "xgboost"
-    ]
+    prediction_xgb = int(
+        predictions[
+            "xgboost"
+        ]
+    )
 
-    prediction_lstm = predictions[
-        "lstm"
-    ]
-
-
-    model_votes = [
-
-        prediction_dt,
-
-        prediction_nb,
-
-        prediction_xgb,
-
-        prediction_lstm,
-
-    ]
-
-
-    # --------------------------------------------------------
-    # ENSEMBLE RESULT
-    # --------------------------------------------------------
-
-    ensemble_prediction = majority_vote(
-        model_votes
+    prediction_lstm = int(
+        predictions[
+            "lstm"
+        ]
     )
 
 
-    # --------------------------------------------------------
-    # CONTEXT CORRECTION
-    # --------------------------------------------------------
+    # ========================================================
+    # ENSEMBLE
+    # ========================================================
 
-    final_prediction = context_correction(
+    ensemble_prediction, final_prediction, vote_counts = (
+        resolve_ensemble(
+            text,
+            predictions
+        )
+    )
 
-        text,
 
-        ensemble_prediction
+    # ========================================================
+    # CONTEXT CORRECTION STATUS
+    # ========================================================
+
+    correction_applied = (
+
+        int(
+            ensemble_prediction
+        )
+        !=
+        int(
+            final_prediction
+        )
 
     )
 
 
-    # --------------------------------------------------------
-    # DETAILS
-    # --------------------------------------------------------
+    # ========================================================
+    # RESULT
+    # ========================================================
 
     return {
 
+        # Final result
         "final":
             label_from_class(
                 final_prediction
             ),
 
+        # Individual models
         "decision_tree":
             label_from_class(
                 prediction_dt
@@ -1384,17 +1975,126 @@ def predict_with_details(
                 prediction_lstm
             ),
 
+        # Ensemble before correction
         "ensemble_class":
             int(
-                ensemble_prediction
+                final_prediction
             ),
 
+        # Final result
         "final_class":
             int(
                 final_prediction
             ),
 
+        # Raw ensemble
+        "raw_ensemble_class":
+            int(
+                ensemble_prediction
+            ),
+
+        # Whether context changed result
+        "context_correction":
+            correction_applied,
+
+        # Vote counts
+        "vote_counts":
+            vote_counts,
+
     }
+
+
+# ============================================================
+# OPTIONAL DEBUG FUNCTION
+# ============================================================
+
+def debug_prediction(
+    text
+):
+
+    details = predict_with_details(
+        text
+    )
+
+    print()
+    print(
+        "================================================"
+    )
+    print(
+        "PREDICTION DEBUG"
+    )
+    print(
+        "================================================"
+    )
+
+    print(
+        "Input:",
+        text
+    )
+
+    print(
+        "Decision Tree:",
+        details[
+            "decision_tree"
+        ]
+    )
+
+    print(
+        "Naive Bayes:",
+        details[
+            "naive_bayes"
+        ]
+    )
+
+    print(
+        "XGBoost:",
+        details[
+            "xgboost"
+        ]
+    )
+
+    print(
+        "LSTM:",
+        details[
+            "lstm"
+        ]
+    )
+
+    print(
+        "Raw Ensemble:",
+        label_from_class(
+            details[
+                "raw_ensemble_class"
+            ]
+        )
+    )
+
+    print(
+        "Final:",
+        details[
+            "final"
+        ]
+    )
+
+    print(
+        "Context Correction:",
+        details[
+            "context_correction"
+        ]
+    )
+
+    print(
+        "Vote Counts:",
+        details[
+            "vote_counts"
+        ]
+    )
+
+    print(
+        "================================================"
+    )
+
+    return details
 
 
 # ============================================================
@@ -1414,11 +2114,16 @@ print(
 )
 
 print(
-    "Ensemble: Majority Voting"
+    "Ensemble: Majority Voting + Tie Resolution"
 )
 
 print(
     "Context Correction: Enabled"
+
+)
+
+print(
+    "Emotion Classes: 6"
 )
 
 print(
